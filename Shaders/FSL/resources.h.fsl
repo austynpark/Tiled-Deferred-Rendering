@@ -1,0 +1,23 @@
+#ifndef RESOURCES_H
+#define RESOURCES_H
+
+STATIC const float PI = 3.14159265359;
+
+// UPDATE_FREQ_NONE
+RES(Tex2D(float4), textureMaps[TOTAL_IMGS], UPDATE_FREQ_NONE, t0, binding = 0);
+
+CBUFFER(uniformBlockCamera, UPDATE_FREQ_PER_FRAME, b0, binding = 0)
+{
+    DATA(float4x4, matViewProj, None);
+    DATA(float4x4, matInvViewProj, None);
+    DATA(float3, camPos, None);
+};
+
+// PUSH CONSTANT
+PUSH_CONSTANT(cbModelIdRootConstants, b3)
+{
+    DATA(float4x4, matWorld, None);
+    DATA(uint, textureID, None);
+};
+
+#endif

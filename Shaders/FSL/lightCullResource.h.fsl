@@ -1,0 +1,80 @@
+#ifndef LIGHTCULLRESOURCE_H
+#define LIGHTCULLRESOURCE_H
+
+#define NUM_THREADS_PER_TILE TILE_RES * TILE_RES
+#define MAX_NUM_LIGHTS_PER_TILE 272
+#define MAX_NUM_LIGHTS_PER_TILE_X2 544
+
+STATIC const float4 radarColors[12] = 
+{
+    {0,0.9255,0.9255,1},   // cyan
+    {0,0.62745,0.9647,1},  // light blue
+    {0,0,0.9647,1},        // blue
+    {0,1,0,1},             // bright green
+    {0,0.7843,0,1},        // green
+    {0,0.5647,0,1},        // dark green
+    {1,1,0,1},             // yellow
+    {0.90588,0.75294,0,1}, // yellow-orange
+    {1,0.5647,0,1},        // orange
+    {1,0,0,1},             // bright red
+    {0.8392,0,0,1},        // red
+    {0.75294,0,0,1},       // dark red
+};
+
+RES(Tex2D(float4), albedoTexture, UPDATE_FREQ_NONE, t0, binding = 0);
+RES(Tex2D(float4), normalTexture, UPDATE_FREQ_NONE, t1, binding = 1);
+//RES(Tex2D(float2), roughnessTexture, UPDATE_FREQ_NONE, t2, binding = 2);
+RES(Tex2D(float2), depthTexture, UPDATE_FREQ_NONE, t2, binding = 2);
+RES(RWTex2D(float4), sceneTexture, UPDATE_FREQ_NONE, u0, binding = 3);
+
+CBUFFER(uniformBlockExtCamera, UPDATE_FREQ_PER_FRAME, b1, binding = 0)
+{
+    DATA(float4x4, matView, None);
+	DATA(float4x4, matViewProj, None);
+    DATA(float4x4, matInvProj, None);
+	DATA(float4x4, matInvViewProjViewport, None); // inverse(proj * view) * mat_viewport
+    DATA(float3, camPos, None);
+};
+
+CBUFFER(uniformBlockLightCull, UPDATE_FREQ_PER_FRAME, b2, binding = 1)
+{
+    DATA(uint, numTilesX, None);
+    DATA(uint, numTilesY, None);
+    DATA(uint, numLights, None);
+    DATA(uint, debugDraw, None); // light map draw on/off => (1/0)
+    DATA(uint2, resolution, None);
+};
+
+RES(Buffer(float4), lightPosAndRadius, UPDATE_FREQ_PER_FRAME, t0, binding = 2);
+RES(Buffer(float4), lightColorAndIntensity, UPDATE_FREQ_PER_FRAME, t1, binding = 3);
+
+float ConvertProjDepthToView(float z)
+{
+    // getElem(Get(matInvProj), 3, 2) which equals to 1.f
+    z = 1.f / ( z * getElem(Get(matInvProj), 2, 3) + getElem(Get(matInvProj), 3, 3));
+    return z;
+}
+
+float3 ConvertProjToView(float4 p)
+{
+    p = mul(Get(matInvProj), p);
+    return (p/p.w).xyz;
+}
+
+float3 CreatePlaneEquation(float3 Q, float3 R)
+{
+    // P is the origin, N = norm(Q-P x R-P);
+    float3 N = normalize(cross(Q, R));
+
+    // D = -dot(N, P)
+    return N;
+}
+
+float GetSignedDistanceFromPlane(float3 p, float3 plane)
+{
+    // since plane xyz is unit vector and plane d is 0          
+    // distance from plane to point would be simply dot product 
+    return dot(p, plane);
+}
+
+#endif

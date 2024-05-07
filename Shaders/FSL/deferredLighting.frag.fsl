@@ -1,0 +1,105 @@
+#include "pbrFunction.h.fsl"
+
+RES(Tex2D(float4), albedoTexture, UPDATE_FREQ_NONE, t0, binding = 0);
+RES(Tex2D(float4), normalTexture, UPDATE_FREQ_NONE, t1, binding = 1);
+//RES(Tex2D(float2), roughnessTexture, UPDATE_FREQ_NONE, t2, binding = 2);
+RES(Tex2D(float2), depthTexture, UPDATE_FREQ_NONE, t2, binding = 2);
+RES(SamplerState, defaultSampler, UPDATE_FREQ_NONE, s3, binding = 3);
+
+CBUFFER(uniformBlockCamera, UPDATE_FREQ_PER_FRAME, b0, binding = 0)
+{
+    DATA(float4x4, matViewProj, None);
+    DATA(float4x4, matInvViewProj, None);
+    DATA(float3, camPos, None);
+};
+
+RES(Buffer(float4), lightPosAndRadius, UPDATE_FREQ_PER_FRAME, t0, binding = 1);
+RES(Buffer(float4), lightColorAndIntensity, UPDATE_FREQ_PER_FRAME, t1, binding = 2);
+
+// PUSH CONSTANT
+PUSH_CONSTANT(cbLightCountRootConstants, b3)
+{
+    DATA(uint, numLights, None);
+};
+
+STRUCT(VSOutput)
+{
+	DATA(float4, position, SV_Position);
+	DATA(float2, texCoord, TEXCOORD0);
+};
+
+STRUCT(Light)
+{
+    DATA(float4, position, None);
+    DATA(float4, color, None);
+};
+
+float4 PS_MAIN( VSOutput In )
+{
+    INIT_MAIN;
+
+    float depth = SampleTex2D(Get(depthTexture), Get(defaultSampler), In.texCoord).r;
+
+    float3 Lo = float3(0.0, 0.0, 0.0);
+
+    // Accumlate Light
+    float4 albedoAndAo = SampleTex2D(Get(albedoTexture), Get(defaultSampler), In.texCoord);
+    float4 normalColor = SampleTex2D(Get(normalTexture), Get(defaultSampler), In.texCoord);
+
+    float _roughness = normalColor.a;
+    float _metalness = normalColor.b;
+    float _ao = albedoAndAo.a;
+    float3 _albedo = pow(albedoAndAo.rgb, float3(2.2f, 2.2f, 2.2f));
+    float3 _normal = normalize(Decode(normalColor.rg));
+
+    float3 F0 = float3(0.04f, 0.04f, 0.04f);
+    F0 = lerp(F0, _albedo, _metalness);
+
+    float4 worldPos = mul(Get(matInvViewProj),float4(2.f * In.texCoord.x - 1.f, 2.f * (1.f-In.texCoord.y) - 1.f, depth, 1.0f));
+    worldPos /= worldPos.w;
+    float3 viewDir = normalize(Get(camPos)- worldPos.xyz); 
+
+    // Point light
+    for(uint i = 0; i < Get(numLights); ++i)
+    {
+        float4 CenterAndRadius = Get(lightPosAndRadius)[i];
+        float3 lightDir= normalize(CenterAndRadius.xyz - worldPos.xyz);
+        float NdotL = dot(_normal, lightDir); 
+
+        if(NdotL <= 0.0f)
+            continue;
+
+        float3 halfVec = normalize(viewDir + lightDir);  
+        float distance = length(CenterAndRadius.xyz - worldPos.xyz);
+
+        if(distance < CenterAndRadius.w)
+        {
+            // Distance attenuation from Epic Games' paper 
+            float distanceByRadius = 1.0f - pow((distance / CenterAndRadius.w), 4);
+            float clamped = pow(clamp(distanceByRadius, 0.0f, 1.0f), 2.0f);
+            float attenuation = clamped / (distance * distance + 1.0f);
+
+            float3 radiance = float3(Get(lightColorAndIntensity)[i].rgb) * attenuation * Get(lightColorAndIntensity)[i].a;
+            float NDF = distributionGGX(_normal, halfVec, _roughness);
+            float G = GeometrySmith(_normal, viewDir, lightDir, _roughness);
+            float3 F = fresnelSchlick(dot(_normal, halfVec), F0);
+
+            float3 nominator = NDF * G * F;
+            float denominator = 4.0f * max(dot(_normal, viewDir), 0.0) * max(dot(_normal, lightDir), 0.0) + 0.001;
+            float3 specular = nominator / denominator;
+
+            float3 kS = F;
+            float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
+            kD *= 1.0f - _metalness;
+
+            Lo += (kD * _albedo / PI + specular) * radiance * NdotL;
+        }
+    }
+
+    float3 ambient = float3(0.03f, 0.03f, 0.03f) * _albedo * float3(_ao, _ao, _ao);
+    Lo += ambient;
+
+    float4 Out = float4(Lo, 1.0f);
+
+    RETURN(Out);
+}

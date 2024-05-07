@@ -1,0 +1,192 @@
+#include "lightCullResource.h.fsl" 
+#include "pbrFunction.h.fsl"
+
+GroupShared(uint, g_group_depth_max);
+GroupShared(uint, g_group_depth_min);
+GroupShared(uint, g_group_shared_light_idx_counter0);
+GroupShared(uint, g_group_shared_light_idx_counter1);
+GroupShared(uint, g_group_shared_light_idx[MAX_NUM_LIGHTS_PER_TILE_X2]);
+
+NUM_THREADS(TILE_RES, TILE_RES, 1)
+void CS_MAIN(SV_DispatchThreadID(uint3) globalId, SV_GroupThreadID(uint3) localId, SV_GroupID(uint3) groupId)
+{
+    INIT_MAIN;
+
+    if(AllLessThan(globalId.xy, resolution))
+    {
+
+        float depth = LoadTex2D(Get(depthTexture), NO_SAMPLER, globalId.xy, 0).r;
+        float viewPosZ = ConvertProjDepthToView(depth);
+        uint z = asuint(viewPosZ);
+
+        uint threadNum = localId.x + localId.y * TILE_RES;
+        
+        if(threadNum == 0)
+        {
+            g_group_depth_min = asuint(FLT_MAX); 
+            g_group_depth_max = 0;
+            g_group_shared_light_idx_counter0 = 0;
+            g_group_shared_light_idx_counter1 = MAX_NUM_LIGHTS_PER_TILE;
+        }
+
+        GroupMemoryBarrier();
+
+        if(depth != 0.f)
+        {
+            AtomicMin(g_group_depth_min, z);
+            AtomicMax(g_group_depth_max, z);       
+        }
+
+        GroupMemoryBarrier();
+
+        float minZ = asfloat(g_group_depth_min);
+        float maxZ = asfloat(g_group_depth_max);
+        float halfZ = (minZ + maxZ) * 0.5f;
+
+        float3 frustumEqn[4];
+        {
+            uint pxm = groupId.x;
+            uint pym = groupId.y;
+            uint pxp = (groupId.x + 1);
+            uint pyp = (groupId.y + 1);
+
+            // full resolution of groups
+            float width = Get(numTilesX);
+            float height = Get(numTilesY);
+
+            float3 p[4];
+            p[0] = ConvertProjToView(float4(pxm / float(width) * 2.f - 1.f, (height - pym) / float(height) * 2.f - 1.f, 1.f, 1.f));
+            p[1] = ConvertProjToView(float4(pxp / float(width) * 2.f - 1.f, (height - pym) / float(height) * 2.f - 1.f, 1.f, 1.f));
+            p[2] = ConvertProjToView(float4(pxp / float(width) * 2.f - 1.f, (height - pyp) / float(height) * 2.f - 1.f, 1.f, 1.f));
+            p[3] = ConvertProjToView(float4(pxm / float(width) * 2.f - 1.f, (height - pyp) / float(height) * 2.f - 1.f, 1.f, 1.f));
+
+            for(uint i = 0; i < 4; ++i)
+                frustumEqn[i] = CreatePlaneEquation(p[i], p[(i + 1) & 3]);
+        }        
+
+        for(uint i = threadNum; i < Get(numLights); i += NUM_THREADS_PER_TILE)
+        {
+            float4 p = Get(lightPosAndRadius)[i];
+            float r = p.w;
+            float3 c = mul(Get(matView), float4(p.xyz, 1.f)).xyz;
+
+            if((GetSignedDistanceFromPlane(c, frustumEqn[0]) < r) &&
+                (GetSignedDistanceFromPlane(c, frustumEqn[1]) < r) &&
+                (GetSignedDistanceFromPlane(c, frustumEqn[2]) < r) &&
+                (GetSignedDistanceFromPlane(c, frustumEqn[3]) < r)) 
+            {
+                if((-c.z + minZ < r) && (c.z - halfZ < r))
+                {
+                    uint dstId = 0;
+                    AtomicAdd(g_group_shared_light_idx_counter0, 1, dstId);
+                    g_group_shared_light_idx[dstId % MAX_NUM_LIGHTS_PER_TILE] = i;
+                }
+
+                if((-c.z + halfZ < r) && (c.z - maxZ < r))
+                {
+                    uint dstId = 0;
+                    AtomicAdd(g_group_shared_light_idx_counter1, 1, dstId);
+                    g_group_shared_light_idx[dstId % MAX_NUM_LIGHTS_PER_TILE_X2] = i;
+                }
+            }
+        }
+
+        GroupMemoryBarrier();
+
+        float3 Lo = float3(0.0, 0.0, 0.0);
+
+        uint startIdx = (viewPosZ <= halfZ) ? 0 : MAX_NUM_LIGHTS_PER_TILE;
+        uint endIdx = (viewPosZ <= halfZ) ? g_group_shared_light_idx_counter0 : g_group_shared_light_idx_counter1;
+
+        // Accumlate Light
+        float4 albedoAndAo = LoadTex2D(Get(albedoTexture), NO_SAMPLER, globalId.xy, 0);
+        float4 normalColor = LoadTex2D(Get(normalTexture), NO_SAMPLER, globalId.xy, 0);
+        
+        float3 albedo = pow(albedoAndAo.rgb,  float3(2.2f, 2.2f, 2.2f));
+        float _roughness = normalColor.a;
+        float _metalness = normalColor.b;
+        float _ao = albedoAndAo.a;
+        float3 _normal = normalize(Decode(normalColor.rg));
+
+        float3 F0 = float3(0.04f, 0.04f, 0.04f);
+        F0 = lerp(F0, albedo, _metalness);
+
+	    float4 worldPos = mul(Get(matInvViewProjViewport),float4(globalId.x + 0.5f, globalId.y + 0.5f, depth, 1.0f));
+        worldPos /= worldPos.w;
+        float3 viewDir = normalize(Get(camPos)- worldPos.xyz); 
+
+        // Point light
+        for(uint i = startIdx; i < endIdx && i < startIdx + MAX_NUM_LIGHTS_PER_TILE; ++i)
+        {
+            uint lightIdx = g_group_shared_light_idx[i];
+            float4 CenterAndRadius = Get(lightPosAndRadius)[lightIdx];
+
+            float3 lightDir= normalize(CenterAndRadius.xyz - worldPos.xyz);
+            float NdotL = dot(_normal, lightDir); 
+
+            if(NdotL <= 0.0f)
+                continue;
+
+            float3 halfVec = normalize(viewDir + lightDir);  
+            float distance = length(CenterAndRadius.xyz - worldPos.xyz);
+
+            if(distance < CenterAndRadius.w)
+            {
+                // Distance attenuation from Epic Games' paper 
+                float distanceByRadius = 1.0f - pow((distance / CenterAndRadius.w), 4);
+                float clamped = pow(clamp(distanceByRadius, 0.0f, 1.0f), 2.0f);
+                float attenuation = clamped / (distance * distance + 1.0f);
+
+                float3 radiance = float3(Get(lightColorAndIntensity)[lightIdx].rgb) * attenuation * Get(lightColorAndIntensity)[lightIdx].a;
+                float NDF = distributionGGX(_normal, halfVec, _roughness);
+                float G = GeometrySmith(_normal, viewDir, lightDir, _roughness);
+                float3 F = fresnelSchlick(dot(_normal, halfVec), F0);
+
+                float3 nominator = NDF * G * F;
+                float denominator = 4.0f * max(dot(_normal, viewDir), 0.0) * max(dot(_normal, lightDir), 0.0) + 0.001;
+                float3 specular = nominator / denominator;
+
+                float3 kS = F;
+                float3 kD = float3(1.0f, 1.0f, 1.0f) - kS;
+                kD *= 1.0f - _metalness;
+
+                Lo += (kD * albedo / PI + specular) * radiance * NdotL;
+            }
+        }
+
+        float3 ambient = float3(0.03f, 0.03f, 0.03f) * albedo * float3(_ao, _ao, _ao);
+        Lo += ambient;
+        Lo = Lo / (Lo + float3(1.0f, 1.0f, 1.0f));
+        Lo = pow(Lo, float3(1.0f/2.2f, 1.0f/2.2f, 1.0f/2.2f)); 
+
+        uint lightCount = endIdx - startIdx;
+
+        if(Get(debugDraw) == 1)
+        {
+            if(localId.x ==0 || localId.y == 0)
+            {
+                Write2D(Get(sceneTexture), globalId.xy, float4(0.3f, 0.3f, 0.3f, 1.0f));
+            }
+            else if(lightCount == 0)
+            {
+                Write2D(Get(sceneTexture), globalId.xy, float4(0.0f, 0.0f, 0.0f, 1.0f));
+            }
+            else if(lightCount >= MAX_NUM_LIGHTS_PER_TILE)
+            {
+                Write2D(Get(sceneTexture), globalId.xy, float4(1.0f, 0.0f, 0.0f, 1.0f));
+            }
+            else
+            {
+                float logBase = exp2(0.083f * log2(float(MAX_NUM_LIGHTS_PER_TILE)));
+
+                // change of base (so that x-axis refers to lightCount and y-axis sits to the color section)
+                uint colorIndex = uint(floor(log2(float(lightCount)) / log2(logBase)));
+                Write2D(Get(sceneTexture), globalId.xy, radarColors[colorIndex]);
+            }
+        }
+        else 
+            Write2D(Get(sceneTexture), globalId.xy, float4(Lo, 1.0f));
+    }
+
+    RETURN();
+}

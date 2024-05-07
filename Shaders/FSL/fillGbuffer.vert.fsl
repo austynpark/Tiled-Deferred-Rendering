@@ -1,0 +1,67 @@
+/*
+ * Copyright (c) 2017-2022 The Forge Interactive Inc.
+ * 
+ * This file is part of The-Forge
+ * (see https://github.com/ConfettiFX/The-Forge).
+ * 
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+*/
+
+CBUFFER(uniformBlockCamera, UPDATE_FREQ_PER_FRAME, b0, binding = 0)
+{
+    DATA(float4x4, matViewProj, None);
+    DATA(float3, camPos, None);
+};
+
+// PUSH CONSTANT
+PUSH_CONSTANT(cbModelIdRootConstants, b3)
+{
+    DATA(float4x4, matWorld, None);
+    DATA(uint, textureID, None);
+};
+
+STRUCT(VSInput)
+{
+	DATA(float3, position, POSITION);
+	DATA(float3, normal,   NORMAL);
+	DATA(float2, texCoord, TEXCOORD);
+};
+
+STRUCT(VSOutput)
+{
+	DATA(float4, position, SV_Position);
+    DATA(float3, pos, TEXCOORD0);
+	DATA(float3, normal,   TEXCOORD1);
+    DATA(float2, texCoord, TEXCOORD2);
+};
+
+VSOutput VS_MAIN( VSInput In, SV_InstanceID(uint) InstanceID )
+{
+    INIT_MAIN;
+    VSOutput Out; 
+    Out.texCoord = In.texCoord; 
+
+    float4x4 mvpMat = mul(Get(matViewProj), Get(matWorld));
+    Out.position = mul(mvpMat, float4(In.position.xyz, 1.0f));
+    Out.pos = mul(Get(matWorld), float4(In.position.xyz, 1.0f)).xyz;
+
+    float3 normal = normalize(mul(Get(matWorld), float4(In.normal, 0.0f)).rgb); // Assume uniform scaling
+
+    Out.normal = normal;
+    RETURN(Out);
+}

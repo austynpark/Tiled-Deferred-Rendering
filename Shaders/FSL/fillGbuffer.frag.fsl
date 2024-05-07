@@ -1,0 +1,110 @@
+/*
+ * Copyright (c) 2017-2022 The Forge Interactive Inc.
+ * 
+ * This file is part of The-Forge
+ * (see https://github.com/ConfettiFX/The-Forge).
+ * 
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ * 
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ * 
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+*/
+
+#include "resources.h.fsl"
+
+RES(SamplerState, defaultSampler, UPDATE_FREQ_NONE, s1, binding = 2);
+
+STRUCT(VSOutput)
+{
+	DATA(float4, position, SV_Position);
+    DATA(float3, pos, TEXCOORD0);
+	DATA(float3, normal,   TEXCOORD1);
+    DATA(float2, texCoord, TEXCOORD2);
+};
+
+STRUCT(PSOutput)
+{
+	DATA(float4, albedo,   SV_Target0); // albedo, ao
+    DATA(float4, normal,   SV_Target1); // oct_normal, metallic, roughness
+};
+
+float3 reconstructNormal(float3 sampleNormal)
+{
+	float3 tangentNormal;
+	tangentNormal.xy = sampleNormal.rg * 2 - 1;
+	tangentNormal.z = sqrt(1 - saturate(dot(tangentNormal.xy, tangentNormal.xy)));
+	return tangentNormal;
+}
+
+float3 getNormalFromMap(float3 rawNormal, float3 viewDirection, float3 normal, float2 uv)
+{
+	float3 tangentNormal = reconstructNormal(rawNormal);
+
+	float3 dPdx = ddx(viewDirection);
+	float3 dPdy = ddy(viewDirection);
+	float2 dUVdx = ddx(uv);
+	float2 dUVdy = ddy(uv);
+
+	float3 N = normalize(normal);
+	float3 crossPdyN = cross(dPdy, N);
+	float3 crossNPdx = cross(N, dPdx); 
+
+	float3 T = crossPdyN * dUVdx.x + crossNPdx * dUVdy.x;
+	float3 B = crossPdyN * dUVdx.y + crossNPdx * dUVdy.y;
+
+	float invScale = rsqrt(max(dot(T, T), dot(B, B)));
+
+	float3x3 TBN = make_f3x3_rows(T * invScale, B * invScale, N);
+	return mul(tangentNormal, TBN);
+}
+
+float2 Encode( float3 n )
+{
+	float2 f;
+	f.x = atan2( n.y, n.x ) * (1/PI);
+	f.y = n.z;
+ 
+	f = f * 0.5 + 0.5;
+	return f;
+}
+
+PSOutput PS_MAIN( VSOutput In )
+{
+    INIT_MAIN;
+	PSOutput Out;
+
+	const uint albedoMapId    = ((Get(textureID) >> 0) & 0xFF);
+	const uint normalMapId    = ((Get(textureID) >> 8) & 0xFF);
+	const uint metallicMapId  = ((Get(textureID) >> 16) & 0xFF);
+	const uint roughnessMapId = ((Get(textureID) >> 24) & 0xFF);
+	const uint aoMapId        = 5;
+    
+	float4 albedoAndAlpha = SampleTex2D(Get(textureMaps)[albedoMapId], Get(defaultSampler), In.texCoord);
+	float3 sampleNormal = SampleTex2D(Get(textureMaps)[normalMapId], Get(defaultSampler), In.texCoord).rgb;
+	float metallic = SampleTex2D(Get(textureMaps)[metallicMapId], Get(defaultSampler), In.texCoord).r;
+	float roughness = SampleTex2D(Get(textureMaps)[roughnessMapId], Get(defaultSampler), In.texCoord).r;
+	float ao = SampleTex2D(Get(textureMaps)[aoMapId], Get(defaultSampler), In.texCoord).r;
+
+	const float alpha = albedoAndAlpha.a;
+	if(alpha < 0.5)
+		clip(-1);
+
+	float3 V = normalize(Get(camPos) - In.pos);
+
+	Out.albedo = float4(albedoAndAlpha.xyz, ao);
+	Out.normal = float4(Encode(normalize(getNormalFromMap(sampleNormal, -V, In.normal, In.texCoord))), metallic, roughness);
+
+    RETURN(Out);
+}

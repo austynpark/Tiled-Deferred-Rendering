@@ -1,0 +1,37 @@
+#include "../Shared.h"
+
+#vert fillGbuffer.vert
+#include "fillGbuffer.vert.fsl"
+#end
+
+#frag fillGbuffer.frag
+#include "fillGbuffer.frag.fsl"
+#end
+
+#vert renderQuad.vert
+#include "renderQuad.vert.fsl"
+#end
+
+#frag renderQuad.frag
+#include "renderQuad.frag.fsl"
+#end
+
+#vert deferredLighting.vert
+#include "deferredLighting.vert.fsl"
+#end
+
+#frag deferredLighting.frag
+#include "deferredLighting.frag.fsl"
+#end
+
+#comp TiledCullBaseline.comp
+#include "TiledCullBaseline.comp.fsl"
+#end
+
+#comp TiledCullHalfZ.comp
+#include "TiledCullHalfZ.comp.fsl"
+#end
+
+#comp TiledCullModifiedZ.comp
+#include "TiledCullModifiedZ.comp.fsl"
+#end

@@ -1,0 +1,3 @@
+#define TOTAL_IMGS 84
+#define MAX_LIGHTS 4096
+#define TILE_RES 16

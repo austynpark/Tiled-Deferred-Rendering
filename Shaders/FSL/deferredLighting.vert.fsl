@@ -1,0 +1,22 @@
+STRUCT(VSInput)
+{
+    DATA(float3, position, POSITION);
+    DATA(float2, texCoord, TEXCOORD0);
+};
+
+STRUCT(VSOutput)
+{
+	DATA(float4, position, SV_Position);
+	DATA(float2, texCoord, TEXCOORD0);
+};
+
+VSOutput VS_MAIN( VSInput In )
+{
+	INIT_MAIN;
+	VSOutput Out;
+
+	Out.position = float4(In.position, 1.0);
+	Out.texCoord = In.texCoord;
+
+	RETURN(Out);
+}
